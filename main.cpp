@@ -1,7 +1,6 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <string>
 #include <vector>
 #include <deque>
 #include <algorithm>
@@ -11,145 +10,122 @@ using namespace std;
 struct Task {
     string id;
     int burst;
-    vector<string> memBlocks;
+    vector<string> mem;
 };
 
-class CacheLevel {
-public:
-    int capacity;
-    deque<string> blocks;
+deque<string> L1, L2, L3;
+int ramAccesses = 0;
 
-    CacheLevel(int cap) : capacity(cap) {}
+bool contains(deque<string>& q, const string& x) {
+    return find(q.begin(), q.end(), x) != q.end();
+}
 
-    bool contains(const string& block) {
-        for (const auto& b : blocks)
-            if (b == block)
-                return true;
-        return false;
+void insertL3(const string& x) {
+    if (contains(L3, x)) return;
+
+    if (L3.size() >= 512)
+        L3.pop_front();
+
+    L3.push_back(x);
+}
+
+void insertL2(const string& x) {
+    if (contains(L2, x)) return;
+
+    if (L2.size() >= 128) {
+        string evicted = L2.front();
+        L2.pop_front();
+        insertL3(evicted);
     }
 
-    void insert(const string& block) {
-        if (contains(block))
-            return;
+    L2.push_back(x);
+}
 
-        if ((int)blocks.size() >= capacity)
-            blocks.pop_front();
+void insertL1(const string& x) {
+    if (contains(L1, x)) return;
 
-        blocks.push_back(block);
+    if (L1.size() >= 32) {
+        string evicted = L1.front();
+        L1.pop_front();
+        insertL2(evicted);
     }
 
-    void remove(const string& block) {
-        auto it = find(blocks.begin(), blocks.end(), block);
-        if (it != blocks.end())
-            blocks.erase(it);
+    L1.push_back(x);
+}
+
+void accessMemory(const string& block) {
+
+    if (contains(L1, block)) {
+        cout << "L1 -> HIT (4 cycles)\n";
+        return;
     }
 
-    void print(const string& name) {
-        cout << name << ": [";
+    if (contains(L2, block)) {
+        cout << "L1 -> MISS\n";
+        cout << "L2 -> HIT (12 cycles)\n";
 
-        for (size_t i = 0; i < blocks.size(); i++) {
-            cout << blocks[i];
-            if (i + 1 < blocks.size())
-                cout << ", ";
-        }
-
-        cout << "]";
+        L2.erase(find(L2.begin(), L2.end(), block));
+        insertL1(block);
+        return;
     }
-};
 
-class CacheHierarchy {
-public:
-    CacheLevel L1;
-    CacheLevel L2;
-    CacheLevel L3;
-
-    int ramAccesses = 0;
-
-    CacheHierarchy() :
-        L1(32),
-        L2(128),
-        L3(512) {}
-
-    int accessBlock(const string& block) {
-
-        if (L1.contains(block)) {
-            cout << "L1 -> HIT (4 cycles)\n";
-            return 4;
-        }
-
-        if (L2.contains(block)) {
-            cout << "L1 -> MISS\n";
-            cout << "L2 -> HIT (12 cycles)\n";
-
-            L2.remove(block);
-            L1.insert(block);
-
-            return 12;
-        }
-
-        if (L3.contains(block)) {
-            cout << "L1 -> MISS\n";
-            cout << "L2 -> MISS\n";
-            cout << "L3 -> HIT (40 cycles)\n";
-
-            L3.remove(block);
-            L1.insert(block);
-
-            return 40;
-        }
-
+    if (contains(L3, block)) {
         cout << "L1 -> MISS\n";
         cout << "L2 -> MISS\n";
-        cout << "L3 -> MISS\n";
-        cout << "Fetching from RAM (200 cycles)\n";
+        cout << "L3 -> HIT (40 cycles)\n";
 
-        ramAccesses++;
-
-        L1.insert(block);
-
-        return 200;
+        L3.erase(find(L3.begin(), L3.end(), block));
+        insertL1(block);
+        return;
     }
 
-    void printCaches() {
-        L1.print("L1");
-        cout << endl;
+    cout << "L1 -> MISS\n";
+    cout << "L2 -> MISS\n";
+    cout << "L3 -> MISS\n";
+    cout << "Fetching from RAM\n";
 
-        L2.print("L2");
-        cout << endl;
+    ramAccesses++;
+    insertL1(block);
+}
 
-        L3.print("L3");
-        cout << endl;
+void printCache(const string& name, deque<string>& q) {
+    cout << name << ": [";
+
+    for (size_t i = 0; i < q.size(); i++) {
+        cout << q[i];
+        if (i + 1 < q.size())
+            cout << ", ";
     }
-};
+
+    cout << "]\n";
+}
 
 vector<Task> loadTasks(const string& filename) {
 
     ifstream fin(filename);
 
-    vector<Task> tasks;
+    if (!fin) {
+        cout << "Cannot open input file\n";
+        exit(1);
+    }
 
+    vector<Task> tasks;
     string line;
 
     while (getline(fin, line)) {
 
+        if (line.empty()) continue;
+
         stringstream ss(line);
 
+        Task t;
         string temp;
 
-        Task t;
-
-        ss >> temp;
-        ss >> t.id;
-
-        ss >> temp;
-        ss >> t.burst;
-
-        ss >> temp;
+        ss >> temp >> t.id >> temp >> t.burst >> temp;
 
         string block;
-
         while (ss >> block)
-            t.memBlocks.push_back(block);
+            t.mem.push_back(block);
 
         tasks.push_back(t);
     }
@@ -162,69 +138,42 @@ int main() {
     vector<Task> tasks = loadTasks("input_task2.txt");
 
     sort(tasks.begin(), tasks.end(),
-        [](const Task& a, const Task& b) {
-            return a.burst < b.burst;
-        });
-
-    CacheHierarchy cache;
+         [](const Task& a, const Task& b) {
+             return a.burst < b.burst;
+         });
 
     int cycle = 1;
-    int totalCycles = 0;
 
-    cout << "===== SJF SCHEDULER =====\n\n";
+    cout << "===== SJF CPU SCHEDULER =====\n";
 
     for (auto& task : tasks) {
 
         for (int i = 0; i < task.burst; i++) {
 
-            string block =
-                task.memBlocks[i % task.memBlocks.size()];
+            string block = task.mem[i % task.mem.size()];
 
-            cout << "---------------------------------\n";
+            cout << "\n----------------------------------\n";
+            cout << "Cycle " << cycle << '\n';
+            cout << "Running: " << task.id << '\n';
+            cout << "Requesting: " << block << '\n';
 
-            cout << "Cycle " << cycle << endl;
+            accessMemory(block);
 
-            cout << "Running: "
-                 << task.id
-                 << endl;
-
-            cout << "Requesting: "
-                 << block
-                 << endl;
-
-            int latency =
-                cache.accessBlock(block);
-
-            cache.printCaches();
-
-            cout << "Latency Paid: "
-                 << latency
-                 << " cycles\n";
-
-            cout << endl;
+            printCache("L1", L1);
+            printCache("L2", L2);
+            printCache("L3", L3);
 
             cycle++;
-            totalCycles++;
         }
     }
 
-    cout << "\n============================\n";
-    cout << "=== FINAL RESULTS ==========\n";
-    cout << "============================\n";
+    
+    cout << "\n=== FINAL RESULTS ===\n";
 
-    cout << "Scheduler: SJF\n";
-
-    cout << "Tasks Completed: "
-         << tasks.size()
-         << endl;
-
-    cout << "CPU Cycles: "
-         << totalCycles
-         << endl;
-
-    cout << "RAM Accesses: "
-         << cache.ramAccesses
-         << endl;
+    cout << "Total Cycles: " << cycle - 1 << '\n';
+    cout << "Tasks Completed: " << tasks.size() << '\n';
+    cout << "Scheduler: Shortest Job First (SJF)\n";
+    cout << "RAM Accesses: " << ramAccesses << '\n';
 
     return 0;
 }
